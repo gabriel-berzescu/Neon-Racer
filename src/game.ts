@@ -86,6 +86,8 @@ export interface SoundLike {
 
 /** The stage parked under the title screen. */
 const TITLE_SEED = 1;
+/** Where the title's car is parked (m along the road: behind the start line, on the grid). */
+const TITLE_PARK_S = -30;
 /** Seconds between crossing the finish line and the results card. */
 const RESULTS_DELAY = 1.6;
 /** Upside down or on its side this long, and the car is put back on the road by itself. */
@@ -360,12 +362,13 @@ export class Game {
     this.renderer.scene.add(view.object);
   }
 
-  /** The title's car: parked on the title stage's start line. */
+  /** The title's car: parked on the title stage's grid, far enough behind the start gantry for the orbit to clear it. */
   private parkCar(): void {
-    const g = this.stage!.track.grid[0];
-    _up.set(0, 1, 0).applyQuaternion(g.quaternion);
-    this.parkedPose.position.copy(g.position).addScaledVector(_up, this.carDef.physics.chassis.cgHeight);
-    this.parkedPose.quaternion.copy(g.quaternion);
+    const tr = this.stage!.track;
+    tr.frameAt(TITLE_PARK_S, _frame);
+    tr.pointAt(TITLE_PARK_S, 0, _v);
+    this.parkedPose.quaternion.setFromRotationMatrix(_m4.makeBasis(_frame.left, _frame.normal, _frame.tangent));
+    this.parkedPose.position.copy(_v).addScaledVector(_frame.normal, this.carDef.physics.chassis.cgHeight);
   }
 
   /** Back on the road (the Back button, or the car upside down): on the centre line where the run had got to, at a standstill. */
@@ -614,11 +617,15 @@ export class Game {
     this.quality.frame(dt, !this.paused && run.phase === 'running');
 
     if (!this.paused) {
-      // the controls: the player's (or the QA autodriver's), the car brakes itself behind the results card
+      // the controls: the player's (or the QA autodriver's); past the finish line the car steers itself down the run-out and
+      // brakes to a stop (the run-out ends in a sand trap, and the barriers only push sideways)
       this.hint = tr.project(car.p.x, car.p.z, _tp, this.hint);
       let steer = 0, throttle = 0, brake = 0, handbrake = 0;
-      if (run.finished && this.resultsIn <= 0) {
-        brake = 0.6;
+      if (run.finished) {
+        steer = autodrive(tr, car.state, _tp.s, this.carDef.physics.chassis.maxSteer, this.carDef.physics.chassis.wheelbase).steer;
+        brake = 0.55;
+        // stopped: held as on the grid (the automatic gearbox would take a brake held at a standstill as a wish to reverse)
+        if (Math.abs(car.state.forwardSpeed) < 1) car.holdOnGrid = true;
       } else if (this.autodrive) {
         const a = autodrive(tr, car.state, _tp.s, this.carDef.physics.chassis.maxSteer, this.carDef.physics.chassis.wheelbase);
         steer = a.steer;

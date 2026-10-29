@@ -1,7 +1,8 @@
 /**
  * QA only (`?autodrive=1`): drives the car along the road's centre line so a headless browser can tour a stage for screenshots
  * and timings. Pure pursuit on a point ahead for the steering, and a speed from the tightest curvature in the next stretch
- * (what the slicks hold, roughly) for the pedals. A tool, not a racing driver: it is slow and careful.
+ * (what the slicks hold, roughly) for the pedals. A tool, not a racing driver: it is slow and careful. The game also steers the car
+ * down the run-out with it after the finish. (frameAt is given s past the ends: a stage covers its grid and run-out.)
  */
 import { Vector3 } from 'three';
 import type { TrackFrame, TrackRuntime, VehicleState } from '../core/contracts';
@@ -30,7 +31,7 @@ export function autodrive(track: TrackRuntime, state: VehicleState, s: number, m
   let target = MAX_SPEED;
   const reach = 40 + (v * v) / (2 * 0.8 * 9.81);
   for (let ds = 0; ds <= reach; ds += 10) {
-    track.frameAt(track.wrapS(s + ds), _f);
+    track.frameAt(s + ds, _f);
     const k = Math.abs(_f.curvature);
     if (k < 1e-5) continue;
     const vk = Math.sqrt((PLAN_G * 9.81) / k);
@@ -40,7 +41,7 @@ export function autodrive(track: TrackRuntime, state: VehicleState, s: number, m
   }
   // pure pursuit on the centre line, a speed-dependent distance ahead
   const look = Math.max(8, v * 0.9);
-  track.frameAt(track.wrapS(s + look), _f);
+  track.frameAt(s + look, _f);
   _fwd.set(0, 0, 1).applyQuaternion(state.quaternion);
   _left.set(1, 0, 0).applyQuaternion(state.quaternion);
   _to.subVectors(_f.position, state.position);

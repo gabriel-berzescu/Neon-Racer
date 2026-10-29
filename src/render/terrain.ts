@@ -13,13 +13,15 @@
  * (three.js builds the model-view matrix in float64), so everything the GPU sees is a small number. The noise lattice offsets for
  * that origin come from terrainLattice() in float64. World-fixed lines (grid) use the origin modulo 5000 m (after the grid shift).
  *
- * A canyon run (setCanyon) uploads its carve field (src/world/canyon-field.ts) as two float textures; the vertex shader carves it
- * into the terrain after the base height, addressed like the noise lattice (CanyonUniforms: the origin's cell and fraction in
- * the field's grid, float64 here). Set the same field on the CPU side (setActiveCanyon) so the physics flies the same canyon.
+ * A stage (setStage) moves the world so the stage lies at the origin (the noise lattice is that of the shifted origin, from
+ * getTerrainShift(), float64 here) and uploads its road carve (src/world/stage-field.ts) as two small float textures, a page table
+ * and an atlas of tiles; the vertex shader carves it into the terrain after the base height, addressed like the noise lattice
+ * (StageUniforms: the origin's cell and fraction in the field's grid, float64 here). setActiveStage() (src/world/stage.ts) sets the
+ * same shift and field on the CPU side, so the chase camera's ground is the ground you see.
  */
 import * as THREE from 'three';
-import type { CanyonField } from '../world/canyon-field';
-import { groundAt, TERRAIN_SLOT_COUNT, terrainLattice } from '../world/terrain';
+import type { StageField } from '../world/stage-field';
+import { getTerrainShift, groundAt, TERRAIN_SLOT_COUNT, terrainLattice } from '../world/terrain';
 import { PALETTE } from './palette';
 import { SKY_UNIFORMS } from './skyGlsl';
 import { TERRAIN_CELLS, TERRAIN_FOG_DISTANCE, TERRAIN_FRAG, TERRAIN_GRID_SHIFT, TERRAIN_LEVELS, TERRAIN_VERT } from './terrainGlsl';
@@ -59,49 +61,48 @@ function buildGeometry(hole: { dx: number; dz: number } | null, positions: THREE
 }
 
 /**
- * The uniforms of the canyon carve (CANYON_GLSL in terrainGlsl.ts): the field's textures and, per origin, where the origin lies in
- * the field's grid. Used by TerrainView, and by sandbox/terrain-check to test the GLSL against the CPU.
+ * The uniforms of the stage's road carve (STAGE_GLSL in terrainGlsl.ts): the field's page table and atlas and, per origin, where the
+ * origin lies in the field's grid. Used by TerrainView, and by sandbox/road-check to test the GLSL against the CPU.
  */
-export class CanyonUniforms {
+export class StageUniforms {
   readonly uniforms = {
-    uCanyonOn: { value: 0 },
-    uCanyonField: { value: emptyFloatTexture() as THREE.Texture },
-    uCanyonSec: { value: emptyFloatTexture() as THREE.Texture },
-    uCanyonGrid: { value: new THREE.Vector4() },
-    uCanyonDim: { value: new THREE.Vector4(2, 2, 1, 2) },
-    uCanyonBox: { value: new THREE.Vector4() },
-    uCanyonLen: { value: 0 },
+    uStageOn: { value: 0 },
+    uStagePage: { value: emptyFloatTexture() as THREE.Texture },
+    uStageAtlas: { value: emptyFloatTexture() as THREE.Texture },
+    uStageGrid: { value: new THREE.Vector4() },
+    uStageDim: { value: new THREE.Vector4(1, 1, 1, 32) },
+    uStageBox: { value: new THREE.Vector4() },
   };
-  private field: CanyonField | null = null;
+  private field: StageField | null = null;
   private textures: THREE.DataTexture[] = [];
 
-  get active(): CanyonField | null {
+  get active(): StageField | null {
     return this.field;
   }
 
-  set(field: CanyonField | null): void {
+  set(field: StageField | null): void {
     for (const t of this.textures) t.dispose();
     this.textures = [];
     this.field = field;
     const u = this.uniforms;
     if (!field) {
-      u.uCanyonOn.value = 0;
+      u.uStageOn.value = 0;
       return;
     }
     const tex = (data: Float32Array, w: number, h: number): THREE.DataTexture => {
-      const t = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.FloatType);
+      const t = new THREE.DataTexture(data, w, h, THREE.RGFormat, THREE.FloatType);
       t.minFilter = THREE.NearestFilter;
       t.magFilter = THREE.NearestFilter;
       t.generateMipmaps = false;
+      t.unpackAlignment = 1;
       t.needsUpdate = true;
       this.textures.push(t);
       return t;
     };
-    u.uCanyonField.value = tex(field.data, field.nx, field.nz);
-    u.uCanyonSec.value = tex(field.section, field.n, 1);
-    u.uCanyonDim.value.set(field.nx, field.nz, 1 / field.cell, field.n);
-    u.uCanyonLen.value = field.length;
-    u.uCanyonOn.value = 1;
+    u.uStagePage.value = tex(field.page, field.ntx, field.ntz);
+    u.uStageAtlas.value = tex(field.atlas, field.aw, field.ah);
+    u.uStageDim.value.set(field.ntx * field.tile, field.ntz * field.tile, 1 / field.cell, field.tile);
+    u.uStageOn.value = 1;
   }
 
   /** Per origin (the camera-snapped origin the shader's positions are relative to; float64 here). */
@@ -112,14 +113,14 @@ export class CanyonUniforms {
     const gz = (oz - f.z0) / f.cell;
     const cx = Math.floor(gx);
     const cz = Math.floor(gz);
-    this.uniforms.uCanyonGrid.value.set(cx, cz, gx - cx, gz - cz);
-    this.uniforms.uCanyonBox.value.set(f.minX - ox, f.minZ - oz, f.maxX - ox, f.maxZ - oz);
+    this.uniforms.uStageGrid.value.set(cx, cz, gx - cx, gz - cz);
+    this.uniforms.uStageBox.value.set(f.minX - ox, f.minZ - oz, f.maxX - ox, f.maxZ - oz);
   }
 
   dispose(): void {
     this.set(null);
-    this.uniforms.uCanyonField.value.dispose();
-    this.uniforms.uCanyonSec.value.dispose();
+    this.uniforms.uStagePage.value.dispose();
+    this.uniforms.uStageAtlas.value.dispose();
   }
 }
 
@@ -139,7 +140,7 @@ export class TerrainView {
   private readonly meshes: THREE.Mesh[] = [];
   private readonly materials: THREE.ShaderMaterial[] = [];
   private readonly lattice = new Float32Array(TERRAIN_SLOT_COUNT * 4);
-  private readonly canyon = new CanyonUniforms();
+  private readonly stage = new StageUniforms();
 
   private readonly shared = {
     uSlot: { value: this.lattice as unknown as THREE.Vector4[] },
@@ -155,7 +156,7 @@ export class TerrainView {
     uMagenta: { value: new THREE.Color(PALETTE.magenta) },
     uAmber: { value: new THREE.Color(PALETTE.amber) },
     ...SKY_UNIFORMS,
-    ...this.canyon.uniforms,
+    ...this.stage.uniforms,
   };
 
   private readonly tmp = new THREE.Vector3();
@@ -208,11 +209,12 @@ export class TerrainView {
   }
 
   /**
-   * Carves a canyon run into the picture (null: the plain terrain). Pass the field given to setActiveCanyon() (src/world/terrain.ts),
-   * so the physics and the picture agree. Uploads two float textures (the field: 4-12 MB; the section table: 19 KB).
+   * Carves a stage's road into the picture (null: the plain terrain). Pass the stage given to setActiveStage() (src/world/stage.ts),
+   * which also shifts the world (the shift is read from src/world/terrain.ts every frame), so the CPU and the picture agree. Uploads two
+   * small float textures (the atlas: 2-4 MB).
    */
-  setCanyon(field: CanyonField | null): void {
-    this.canyon.set(field);
+  setStage(stage: { readonly field: StageField } | null): void {
+    this.stage.set(stage ? stage.field : null);
   }
 
   /** Call every frame before rendering. */
@@ -231,8 +233,9 @@ export class TerrainView {
     this.shared.uGridOff.value.set(mod(ox - TERRAIN_GRID_SHIFT.x, 5000), mod(oz - TERRAIN_GRID_SHIFT.z, 5000));
     this.shared.uTime.value = timeSeconds;
     this.shared.uAgl.value = this.tmp.y - groundAt(cx, cz);
-    terrainLattice(ox, oz, this.lattice);
-    this.canyon.update(ox, oz);
+    const shift = getTerrainShift();
+    terrainLattice(ox + shift.x, oz + shift.z, this.lattice);
+    this.stage.update(ox, oz);
     this.updatePlanes(camera);
 
     for (let k = 0; k < TERRAIN_LEVELS; k++) {
@@ -276,7 +279,7 @@ export class TerrainView {
     this.full.dispose();
     for (const g of this.holes) g.dispose();
     for (const m of this.materials) m.dispose();
-    this.canyon.dispose();
+    this.stage.dispose();
     this.object.clear();
   }
 }

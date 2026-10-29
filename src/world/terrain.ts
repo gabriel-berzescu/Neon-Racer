@@ -2,10 +2,13 @@
  * The terrain, CPU side: the single source of truth for collisions. World axes and units: see coords.ts (+x east, +y up, +z SOUTH,
  * metres, sea level y = 0).
  *
- * `baseHeightAt(x, z)` is a pure, deterministic function of two numbers (no Math.random, no state, no allocation) built from
- * integer-hashed gradient noise. `heightAt(x, z)` is that with the active canyon run carved in (setActiveCanyon: the one piece of
- * state, a precomputed field, src/world/canyon-field.ts); with none it is baseHeightAt exactly. The GPU renders the very same function (src/render/terrainGlsl.ts is its GLSL twin and takes its
- * tables and parameters from this file), so the mesh you see is the surface you hit.
+ * `worldHeightAt(x, z)` is a pure, deterministic function of two numbers (no Math.random, no state, no allocation) built from
+ * integer-hashed gradient noise: Neon-Flight's endless world. Neon-Racer drives on it near the world origin: a stage is a place far out
+ * in that world, and the terrain is SHIFTED so the stage lies around (0, 0) (setTerrainShift; float32 keeps millimetres there, the
+ * physics' arrays and the GPU are float32). `baseHeightAt(x, z)` is the shifted terrain, `heightAt(x, z)` that with the active stage's
+ * road carved in (setActiveStageField: a precomputed field, src/world/stage-field.ts); with none it is baseHeightAt exactly. These two
+ * (the shift and the field) are the only state. The GPU renders the very same function (src/render/terrainGlsl.ts is its GLSL twin and
+ * takes its tables and parameters from this file), so the mesh you see is the surface you hit.
  *
  * Shape of the world (all tunables are in TP below):
  *   - a gentle domain warp bends everything so nothing lines up on a grid;
@@ -21,7 +24,7 @@
  * lattice cell and fraction of the camera-snapped origin computed here in float64 (`terrainLattice`) and adds small local offsets.
  */
 
-import type { CanyonField } from './canyon-field';
+import type { StageField } from './stage-field';
 
 export const SEA_LEVEL = 0;
 
@@ -362,10 +365,10 @@ function ridged(s0: number, count: number, gain: number, decay: number, eps0: nu
 }
 
 /**
- * The base terrain's height in metres (negative below sea level): the endless world WITHOUT any canyon carved in. The canyon
- * generator lays canyons out over this (src/world/canyon.ts); everything that flies or draws uses heightAt().
+ * Neon-Flight's world: the height in metres (negative below sea level) at (x, z) of the unshifted world, without any road carved in.
+ * The stage generator looks for a place in it (src/world/stage.ts); everything else uses baseHeightAt() or heightAt().
  */
-export function baseHeightAt(x: number, z: number): number {
+export function worldHeightAt(x: number, z: number): number {
   // domain warp
   const px = x + WARP * nz(S_WARP, x, z);
   const pz = z + WARP * nz(S_WARP + 1, x, z);
@@ -438,29 +441,47 @@ export function baseHeightAt(x: number, z: number): number {
 }
 
 // ------------------------------------------------------------------------------------------------------------------------
-// The active canyon run: carved into the terrain by a precomputed field (src/world/canyon-field.ts). The GPU carves the same
-// field (TerrainView.setCanyon), so the picture keeps matching the physics: set both together.
+// The shift and the active stage. The GPU takes both from here (TerrainView: the noise lattice of the shifted origin, and the field
+// set with TerrainView.setStage), so set them through setActiveStage() (src/world/stage.ts), which sets both sides together.
 // ------------------------------------------------------------------------------------------------------------------------
-let activeCanyon: CanyonField | null = null;
+let shiftX = 0;
+let shiftZ = 0;
+let activeField: StageField | null = null;
 
-/** Carves `field`'s canyon into heightAt / groundAt (null: the plain terrain again, exactly). */
-export function setActiveCanyon(field: CanyonField | null): void {
-  activeCanyon = field;
+/** Moves the world: local (x, z) is world (x + sx, z + sz). (0, 0) is Neon-Flight's own world. */
+export function setTerrainShift(sx: number, sz: number): void {
+  shiftX = sx;
+  shiftZ = sz;
 }
 
-/** The canyon carved into heightAt / groundAt now, if any. */
-export function getActiveCanyon(): CanyonField | null {
-  return activeCanyon;
+/** The shift in force: { x, z } (world metres of the local origin). */
+export function getTerrainShift(): { x: number; z: number } {
+  return { x: shiftX, z: shiftZ };
 }
 
-/** Terrain height in metres (negative below sea level), with the active canyon (if any) carved in. */
+/** Carves `field`'s road into heightAt / groundAt (null: the plain shifted terrain again, exactly). */
+export function setActiveStageField(field: StageField | null): void {
+  activeField = field;
+}
+
+/** The road carved into heightAt / groundAt now, if any. */
+export function getActiveStageField(): StageField | null {
+  return activeField;
+}
+
+/** The terrain at local (x, z) without the road: the world, shifted (see setTerrainShift). */
+export function baseHeightAt(x: number, z: number): number {
+  return worldHeightAt(x + shiftX, z + shiftZ);
+}
+
+/** Terrain height in metres (negative below sea level) at local (x, z), with the active stage's road (if any) carved in. */
 export function heightAt(x: number, z: number): number {
-  const h = baseHeightAt(x, z);
-  // (apply() returns h untouched outside the canyon's bounds: one bounds check)
-  return activeCanyon === null ? h : activeCanyon.apply(h, x, z);
+  const h = worldHeightAt(x + shiftX, z + shiftZ);
+  // (apply() returns h untouched away from the road: a bounds check and a page lookup)
+  return activeField === null ? h : activeField.apply(h, x, z);
 }
 
-/** The solid surface: terrain, or the sea surface where the terrain is below sea level (touching water counts as a crash). */
+/** The solid surface: terrain, or the sea surface where the terrain is below sea level. */
 export function groundAt(x: number, z: number): number {
   const h = heightAt(x, z);
   return h > SEA_LEVEL ? h : SEA_LEVEL;
