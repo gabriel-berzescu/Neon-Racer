@@ -1,53 +1,69 @@
 /**
- * The HUD: a few neon readouts over the 3D view (DOM, no canvas).
+ * The driving HUD: neon readouts over the 3D view (DOM, no canvas), in Neon-Flight's style.
  *
- *   bottom left / right   each side's engine (thrust bar, power setting tick) and its elevon (the stick that moves it)
- *   bottom centre         airspeed (km/h), altitude (m), g
- *   top centre            heading
- *   centre                the flight-path marker (where the wing is actually going), warnings
- *   overlays              the controls card on the first flight, pause, crash, gamepad / sound hints
+ *   top centre      the clock, the next checkpoint, the reference time; the split delta after each checkpoint
+ *   top             the stage's progress: checkpoints, you, the ghost
+ *   bottom centre   speed, gear and a rev bar that turns magenta at the shift point
+ *   bottom corners  each stick's share of the steering (the two sticks add up) and the steering they make together
+ *   centre          the countdown, GO, wrong way, a message now and then
+ *   overlays        the controls card on the first run, the gamepad name, the "click for sound" hint
  */
-import * as THREE from 'three';
-import type { FlightState } from '../flight/flight';
-import type { ControlFrame } from '../input/controls';
+import { formatDelta, formatTime, type CheckpointEvent, type RunPhase } from '../game/run';
 
 const CSS = `
-.nf-hud { position: fixed; inset: 0; pointer-events: none; color: #bff9ff; font: 600 15px/1.25 ui-monospace, 'Cascadia Mono', Consolas, monospace;
+.nr-hud { position: fixed; inset: 0; pointer-events: none; color: #bff9ff; font: 600 15px/1.25 ui-monospace, 'Cascadia Mono', Consolas, monospace;
   letter-spacing: 0.08em; text-transform: uppercase; text-shadow: 0 0 6px rgba(34,243,255,.75), 0 0 18px rgba(34,243,255,.35); user-select: none; }
-.nf-hud .row { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); display: flex; gap: 34px; align-items: flex-end; }
-.nf-hud .read { text-align: center; min-width: 96px; }
-.nf-hud .read b { display: block; font-size: 30px; font-weight: 700; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
-.nf-hud .read i { font-style: normal; font-size: 11px; opacity: .7; letter-spacing: .2em; }
-.nf-hud .hdg { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); font-size: 18px; font-variant-numeric: tabular-nums; }
-.nf-hud .side { position: absolute; bottom: 26px; display: flex; gap: 22px; align-items: flex-end; }
-.nf-hud .side.l { left: 28px; } .nf-hud .side.r { right: 28px; flex-direction: row-reverse; }
-.nf-hud .bar { position: relative; width: 16px; height: 150px; border: 1.5px solid rgba(191,249,255,.7); border-radius: 3px;
-  box-shadow: 0 0 10px rgba(34,243,255,.35), inset 0 0 8px rgba(34,243,255,.15); }
-.nf-hud .bar .fill { position: absolute; left: 2px; right: 2px; bottom: 2px; background: linear-gradient(#ffd27a, #ff7a30);
-  box-shadow: 0 0 12px #ff9a40; border-radius: 1px; }
-.nf-hud .bar .tick { position: absolute; left: -7px; right: -7px; height: 2px; background: #fff; box-shadow: 0 0 6px #fff; }
-.nf-hud .elev { position: relative; width: 6px; height: 70px; border-left: 1.5px solid rgba(255,43,214,.6); margin-bottom: 40px; }
-.nf-hud .elev .dot { position: absolute; left: -6px; width: 10px; height: 10px; margin-top: -5px; border-radius: 50%; background: #ff6be6;
-  box-shadow: 0 0 10px #ff2bd6; }
-.nf-hud .lab { font-size: 10px; opacity: .75; letter-spacing: .14em; margin-top: 6px; text-align: center; white-space: nowrap; }
-.nf-hud .stack { display: flex; flex-direction: column; align-items: center; }
-.nf-hud .fpm { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; }
-.nf-hud .warn { position: absolute; top: 30%; left: 50%; transform: translateX(-50%); font-size: 28px; color: #ff6be6;
-  text-shadow: 0 0 10px #ff2bd6, 0 0 30px #ff2bd6; letter-spacing: .3em; }
-.nf-hud .warn.blink { animation: nfblink .5s steps(2, start) infinite; }
-@keyframes nfblink { to { visibility: hidden; } }
-.nf-hud .center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
-.nf-hud .big { font-size: 54px; letter-spacing: .35em; color: #ff6be6; text-shadow: 0 0 14px #ff2bd6, 0 0 40px #ff2bd6; }
-.nf-hud .sub { margin-top: 12px; font-size: 15px; opacity: .85; }
-.nf-hud .card { position: absolute; top: 64px; left: 28px; padding: 18px 24px; border: 1.5px solid rgba(34,243,255,.55);
-  border-radius: 10px; background: rgba(7,2,15,.55); backdrop-filter: blur(3px); box-shadow: 0 0 24px rgba(34,243,255,.25); max-width: 430px; font-size: 14px;
+.nr-hud.hidden { display: none; }
+.nr-hud .clock { position: absolute; top: 34px; left: 50%; transform: translateX(-50%); text-align: center; }
+.nr-hud .clock b { display: block; font-size: 38px; font-weight: 700; color: #fff; letter-spacing: .04em; font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 8px rgba(34,243,255,.9), 0 0 24px rgba(34,243,255,.45); }
+.nr-hud .clock i { font-style: normal; font-size: 12px; opacity: .75; letter-spacing: .2em; font-variant-numeric: tabular-nums; }
+.nr-hud .delta { position: absolute; top: 132px; left: 50%; transform: translateX(-50%); text-align: center; transition: opacity .4s; }
+.nr-hud .delta b { display: block; font-size: 30px; font-variant-numeric: tabular-nums; }
+.nr-hud .delta i { font-style: normal; font-size: 12px; opacity: .8; letter-spacing: .25em; }
+.nr-hud .ahead { color: #6dffb0; text-shadow: 0 0 8px #18ff8c, 0 0 22px #18ff8c; }
+.nr-hud .behind { color: #ff8fa3; text-shadow: 0 0 8px #ff2b5e, 0 0 22px #ff2b5e; }
+.nr-hud .prog { position: absolute; top: 18px; left: 50%; width: min(46vw, 640px); height: 2px; transform: translateX(-50%);
+  background: rgba(191,249,255,.28); box-shadow: 0 0 8px rgba(34,243,255,.4); }
+.nr-hud .prog .cp { position: absolute; top: -5px; width: 2px; height: 12px; margin-left: -1px; background: rgba(255,210,122,.8); box-shadow: 0 0 6px #ff9a40; }
+.nr-hud .prog .cp.done { background: rgba(34,243,255,.9); box-shadow: 0 0 6px #22f3ff; }
+.nr-hud .prog .me, .nr-hud .prog .gh { position: absolute; top: -5px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; }
+.nr-hud .prog .me { background: #22f3ff; box-shadow: 0 0 10px #22f3ff; }
+.nr-hud .prog .gh { background: rgba(255,107,230,.75); box-shadow: 0 0 10px #ff2bd6; }
+.nr-hud .row { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); display: flex; gap: 30px; align-items: flex-end; }
+.nr-hud .read { text-align: center; min-width: 84px; }
+.nr-hud .read b { display: block; font-size: 44px; font-weight: 700; letter-spacing: 0.02em; font-variant-numeric: tabular-nums; color: #fff; }
+.nr-hud .read.gear b { color: #ffd27a; text-shadow: 0 0 8px #ff9a40, 0 0 22px #ff9a40; }
+.nr-hud .read i { font-style: normal; font-size: 11px; opacity: .7; letter-spacing: .2em; }
+.nr-hud .revs { position: absolute; left: 50%; bottom: 118px; transform: translateX(-50%); width: 300px; height: 8px;
+  border: 1.5px solid rgba(191,249,255,.55); border-radius: 3px; box-shadow: 0 0 8px rgba(34,243,255,.3); }
+.nr-hud .revs .fill { position: absolute; left: 1px; top: 1px; bottom: 1px; background: linear-gradient(90deg, #22f3ff, #ffd27a); box-shadow: 0 0 10px #22f3ff; }
+.nr-hud .revs.shift .fill { background: #ff2bd6; box-shadow: 0 0 14px #ff2bd6; }
+.nr-hud .stick { position: absolute; bottom: 30px; width: 150px; text-align: center; }
+.nr-hud .stick.l { left: 30px; } .nr-hud .stick.r { right: 30px; }
+.nr-hud .rail { position: relative; height: 2px; background: rgba(255,43,214,.45); margin: 10px 0 0; }
+.nr-hud .rail::before { content: ''; position: absolute; left: 50%; top: -5px; width: 1px; height: 12px; background: rgba(255,255,255,.5); }
+.nr-hud .rail .dot { position: absolute; top: -5px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #ff6be6; box-shadow: 0 0 10px #ff2bd6; }
+.nr-hud .lab { font-size: 10px; opacity: .75; letter-spacing: .14em; margin-top: 8px; white-space: nowrap; }
+.nr-hud .wheel { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); width: 200px; text-align: center; }
+.nr-hud .wheel .lab { margin-top: 6px; }
+.nr-hud .wheel .rail { background: rgba(34,243,255,.35); }
+.nr-hud .wheel .rail .dot { background: #fff; box-shadow: 0 0 10px #22f3ff; }
+.nr-hud .center { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
+.nr-hud .big { font-size: 96px; letter-spacing: .1em; color: #fff; text-shadow: 0 0 14px #ff2bd6, 0 0 40px #ff2bd6, 0 0 90px #ff2bd6; }
+.nr-hud .big.go { color: #fff; text-shadow: 0 0 14px #22f3ff, 0 0 40px #22f3ff, 0 0 90px #22f3ff; }
+.nr-hud .warn { font-size: 30px; color: #ff6be6; text-shadow: 0 0 10px #ff2bd6, 0 0 30px #ff2bd6; letter-spacing: .3em; animation: nrblink .5s steps(2, start) infinite; }
+@keyframes nrblink { to { visibility: hidden; } }
+.nr-hud .msg { position: absolute; top: 56%; left: 50%; transform: translateX(-50%); font-size: 14px; letter-spacing: .2em; opacity: 0; transition: opacity .5s; }
+.nr-hud .card { position: absolute; top: 76px; left: 28px; padding: 18px 24px; border: 1.5px solid rgba(34,243,255,.55);
+  border-radius: 10px; background: rgba(7,2,15,.55); backdrop-filter: blur(3px); box-shadow: 0 0 24px rgba(34,243,255,.25); max-width: 420px; font-size: 14px;
   transition: opacity .8s; text-transform: none; letter-spacing: .03em; font-weight: 500; }
-.nf-hud .card h1 { margin: 0 0 12px; font-size: 22px; letter-spacing: .4em; text-transform: uppercase; color: #fff; }
-.nf-hud .card table { border-collapse: collapse; }
-.nf-hud .card td { padding: 4px 10px; } .nf-hud .card td:first-child { color: #ffd27a; text-align: right; text-shadow: 0 0 6px #ff9a40; }
-.nf-hud .card p { margin: 12px 0 0; font-size: 12px; opacity: .8; }
-.nf-hud .hint { position: absolute; top: 18px; right: 22px; font-size: 12px; opacity: .8; letter-spacing: .12em; }
-.nf-hud .dev { position: absolute; top: 18px; left: 22px; font-size: 12px; opacity: .7; letter-spacing: .12em; }
+.nr-hud .card h1 { margin: 0 0 12px; font-size: 20px; letter-spacing: .4em; text-transform: uppercase; color: #fff; }
+.nr-hud .card table { border-collapse: collapse; }
+.nr-hud .card td { padding: 3px 10px; } .nr-hud .card td:first-child { color: #ffd27a; text-align: right; text-shadow: 0 0 6px #ff9a40; white-space: nowrap; }
+.nr-hud .card p { margin: 12px 0 0; font-size: 12px; opacity: .8; }
+.nr-hud .hint { position: absolute; top: 34px; right: 22px; font-size: 12px; opacity: .8; letter-spacing: .12em; text-align: right; }
+.nr-hud .dev { position: absolute; top: 34px; left: 22px; font-size: 12px; opacity: .7; letter-spacing: .12em; }
 `;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, parent: HTMLElement, html?: string): HTMLElementTagNameMap[K] {
@@ -58,179 +74,237 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, parent: 
   return e;
 }
 
-class Side {
-  readonly fill: HTMLElement;
-  readonly tick: HTMLElement;
-  readonly dot: HTMLElement;
-  constructor(parent: HTMLElement, cls: 'l' | 'r', label: string) {
-    const side = el('div', `side ${cls}`, parent);
-    const s1 = el('div', 'stack', side);
-    const bar = el('div', 'bar', s1);
-    this.fill = el('div', 'fill', bar);
-    this.tick = el('div', 'tick', bar);
-    el('div', 'lab', s1, `${label} eng`);
-    const s2 = el('div', 'stack', side);
-    const elev = el('div', 'elev', s2);
-    this.dot = el('div', 'dot', elev);
-    el('div', 'lab', s2, `${label} wing`);
-  }
-  set(thrust: number, power: number, elevon: number): void {
-    this.fill.style.height = `${(Math.max(0, Math.min(1, thrust)) * 144).toFixed(1)}px`;
-    this.tick.style.bottom = `${(Math.max(0, Math.min(1, power)) * 144 + 1).toFixed(1)}px`;
-    // trailing edge up (stick back) shows the dot low, like the stick itself
-    this.dot.style.top = `${((1 + Math.max(-1, Math.min(1, elevon))) * 35).toFixed(1)}px`;
-  }
+/** What the HUD shows, filled by the game every frame. */
+export interface HudView {
+  speedKmh: number;
+  /** -1 = R, 0 = N, 1.. */
+  gear: number;
+  rpm: number;
+  /** The rpm where the bar turns magenta (the shift point). */
+  shiftRpm: number;
+  maxRpm: number;
+  stickLeft: number;
+  stickRight: number;
+  /** The steering the car is getting now (-1..1), after the filter. */
+  steer: number;
+  run: {
+    phase: RunPhase;
+    countdown: number;
+    time: number;
+    /** Checkpoints passed and in all. */
+    passed: number;
+    count: number;
+    referenceTime: number | null;
+    wrongWay: number;
+  } | null;
+  /** Where you are on the stage (0..1), its checkpoints, and the ghost (null: none). */
+  progress: number;
+  checkpoints: readonly number[];
+  ghost: number | null;
+  /** E.g. "Stage 048213 · Violet Pass". */
+  stageLabel: string;
+  padName: string | null;
+  soundLocked: boolean;
 }
+
+export const CONTROLS_CARD = `<h1>Neon-Racer</h1><table>
+<tr><td>left stick &larr;&rarr;</td><td>steer, half lock</td></tr>
+<tr><td>right stick &larr;&rarr;</td><td>steer, half lock</td></tr>
+<tr><td>both together</td><td>full lock (opposite ways: straight)</td></tr>
+<tr><td>RT / LT</td><td>throttle / brake</td></tr>
+<tr><td>A</td><td>handbrake</td></tr>
+<tr><td>Y &middot; back</td><td>camera &middot; back on the road</td></tr>
+<tr><td>START</td><td>pause</td></tr>
+</table><p>One thumb for the fast bends, both for the tight ones.<br>Keyboard: A/D and &#8592;/&#8594; steer (one each), W/S or &#8593;/&#8595; throttle/brake, Space handbrake, Esc pause.</p>`;
 
 export class Hud {
   private readonly root: HTMLElement;
-  private readonly spd: HTMLElement;
-  private readonly alt: HTMLElement;
-  private readonly g: HTMLElement;
-  private readonly hdg: HTMLElement;
-  private readonly sides: [Side, Side];
-  private readonly fpm: HTMLElement;
-  private readonly warn: HTMLElement;
+  private readonly clockT: HTMLElement;
+  private readonly clockSub: HTMLElement;
+  private readonly delta: HTMLElement;
+  private readonly prog: HTMLElement;
+  private readonly progMe: HTMLElement;
+  private readonly progGhost: HTMLElement;
+  private progCps: HTMLElement[] = [];
+  private progKey = '';
+  private readonly speed: HTMLElement;
+  private readonly gear: HTMLElement;
+  private readonly revs: HTMLElement;
+  private readonly revFill: HTMLElement;
+  private readonly dotL: HTMLElement;
+  private readonly dotR: HTMLElement;
+  private readonly dotW: HTMLElement;
   private readonly center: HTMLElement;
+  private readonly msg: HTMLElement;
   private readonly card: HTMLElement;
   private readonly hint: HTMLElement;
   private readonly dev: HTMLElement;
-  private readonly v = new THREE.Vector3();
+  private deltaFor = 0;
+  private msgFor = 0;
+  private cardShown = false;
+  private cardFor = 0;
   private last: Record<string, string> = {};
-  private cardTimer = 0;
-  private fpmOn = true;
-  private flashText = '';
-  private flashLeft = 0;
-  private cardGone = false;
 
   constructor(parent: HTMLElement) {
-    if (!document.getElementById('nf-hud-css')) {
+    if (!document.getElementById('nr-hud-css')) {
       const st = document.createElement('style');
-      st.id = 'nf-hud-css';
+      st.id = 'nr-hud-css';
       st.textContent = CSS;
       document.head.appendChild(st);
     }
-    this.root = el('div', 'nf-hud', parent);
-    this.root.style.display = 'none';
-    this.hdg = el('div', 'hdg', this.root);
-    const row = el('div', 'row', this.root);
-    const read = (label: string) => {
-      const r = el('div', 'read', row);
-      const b = el('b', '', r);
-      el('i', '', r, label);
-      return b;
+    const r = (this.root = el('div', 'nr-hud hidden', parent));
+    const clock = el('div', 'clock', r);
+    this.clockT = el('b', '', clock);
+    this.clockSub = el('i', '', clock);
+    this.delta = el('div', 'delta', r);
+    this.delta.style.opacity = '0';
+    this.prog = el('div', 'prog', r);
+    this.progGhost = el('div', 'gh', this.prog);
+    this.progMe = el('div', 'me', this.prog);
+    const row = el('div', 'row', r);
+    const sp = el('div', 'read', row);
+    this.speed = el('b', '', sp);
+    el('i', '', sp, 'km/h');
+    const gr = el('div', 'read gear', row);
+    this.gear = el('b', '', gr);
+    el('i', '', gr, 'gear');
+    this.revs = el('div', 'revs', r);
+    this.revFill = el('div', 'fill', this.revs);
+    const stick = (cls: string, label: string) => {
+      const box = el('div', cls, r);
+      const rail = el('div', 'rail', box);
+      const dot = el('div', 'dot', rail);
+      el('div', 'lab', box, label);
+      return dot;
     };
-    this.spd = read('km/h');
-    this.alt = read('alt m');
-    this.g = read('g');
-    this.sides = [new Side(this.root, 'l', 'L'), new Side(this.root, 'r', 'R')];
-    this.fpm = el('div', 'fpm', this.root, `<svg viewBox="-17 -17 34 34" width="34" height="34" fill="none" stroke="#bff9ff" stroke-width="2"
-      style="filter: drop-shadow(0 0 4px #22f3ff)"><circle r="6"/><path d="M-16 0H-6M6 0H16M0 -6V-13"/></svg>`);
-    this.warn = el('div', 'warn', this.root);
-    this.center = el('div', 'center', this.root);
-    this.card = el(
-      'div',
-      'card',
-      this.root,
-      `<h1>Neon&#8209;Flight</h1>
-      <table>
-        <tr><td>left stick &#8597;</td><td>left wing</td></tr>
-        <tr><td>right stick &#8597;</td><td>right wing</td></tr>
-        <tr><td>RT / LT</td><td>more / less power</td></tr>
-        <tr><td>both back / forward</td><td>nose up / down</td></tr>
-        <tr><td>one back, one forward</td><td>roll</td></tr>
-        <tr><td>START</td><td>pause</td></tr>
-      </table>
-      <p>Centred sticks keep flying where the nose points. Bank to turn, pull to tighten.<br>
-      Keyboard: W/S and &#8593;/&#8595; for the wings, Right/Left Shift for more/less power.</p>`,
-    );
-    this.hint = el('div', 'hint', this.root);
-    this.dev = el('div', 'dev', this.root);
+    this.dotL = stick('stick l', 'left stick');
+    this.dotR = stick('stick r', 'right stick');
+    this.dotW = stick('wheel', 'steering');
+    this.center = el('div', 'center', r);
+    this.msg = el('div', 'msg', r);
+    this.card = el('div', 'card', r, CONTROLS_CARD);
+    this.card.style.opacity = '0';
+    this.hint = el('div', 'hint', r);
+    this.dev = el('div', 'dev', r);
   }
 
-  /** Shown while flying; hidden on the title screen. */
-  setVisible(on: boolean): void {
-    this.root.style.display = on ? 'block' : 'none';
+  setVisible(v: boolean): void {
+    this.root.classList.toggle('hidden', !v);
   }
 
-  /** The flight-path marker on or off (the settings menu). */
-  setFpm(on: boolean): void {
-    this.fpmOn = on;
+  /** The controls card, until the car has been driven a little (the first run of a visit). */
+  showControlsCard(): void {
+    if (this.cardShown) return;
+    this.cardShown = true;
+    this.cardFor = 14;
+    this.card.style.opacity = '1';
   }
 
-  /** A short notice in the top-right corner for a few seconds. */
-  flash(text: string, seconds = 4): void {
-    this.flashText = text;
-    this.flashLeft = seconds;
+  /** A short message in the middle (a quality change, "back on the road", ...). */
+  flash(text: string, seconds = 2.5): void {
+    this.msg.textContent = text;
+    this.msg.style.opacity = '1';
+    this.msgFor = seconds;
   }
 
-  private text(e: HTMLElement, key: string, s: string): void {
-    if (this.last[key] === s) return;
-    this.last[key] = s;
-    e.textContent = s;
-  }
-
-  private html(e: HTMLElement, key: string, s: string): void {
-    if (this.last[key] === s) return;
-    this.last[key] = s;
-    e.innerHTML = s;
-  }
-
-  update(s: FlightState, c: ControlFrame, camera: THREE.Camera, dt: number, opts: { paused: boolean; respawnIn: number; soundLocked: boolean; menuOpen?: boolean; inRun?: boolean; power: number }): void {
-    this.text(this.spd, 'spd', Math.round(s.airspeed * 3.6).toString());
-    this.text(this.alt, 'alt', Math.round(s.altitude).toString());
-    this.text(this.g, 'g', (Math.abs(s.g) < 0.05 ? 0 : s.g).toFixed(1));
-    const hdg = Math.round(((s.headingDeg % 360) + 360) % 360) % 360;
-    const card = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(hdg / 45) % 8];
-    this.text(this.hdg, 'hdg', `${card.padEnd(2, ' ')} ${hdg.toString().padStart(3, '0')}°`);
-    this.sides[0].set(s.thrust[0] / 11000, opts.power, s.elevons[0]);
-    this.sides[1].set(s.thrust[1] / 11000, opts.power, s.elevons[1]);
-
-    // flight-path marker: where the velocity vector meets the screen
-    const show = this.fpmOn && !s.crashed && s.speed > 20;
-    if (show) {
-      this.v.copy(s.velocity).normalize().multiplyScalar(2000).add(s.position).project(camera);
-      const vis = this.v.z < 1 && Math.abs(this.v.x) < 1.1 && Math.abs(this.v.y) < 1.1;
-      this.fpm.style.display = vis ? 'block' : 'none';
-      if (vis) {
-        this.fpm.style.left = `${((this.v.x + 1) * 50).toFixed(2)}%`;
-        this.fpm.style.top = `${((1 - this.v.y) * 50).toFixed(2)}%`;
-      }
-    } else this.fpm.style.display = 'none';
-
-    // warnings: about to hit the ground, or at the wing's lift limit
-    let warn = '';
-    if (!s.crashed && !opts.paused) {
-      const sink = -s.climb;
-      if (sink > 5 && s.agl / sink < 4.5) warn = 'pull up';
-      else if (s.limiting) warn = 'max lift';
+  /** A checkpoint was passed: its split against the reference for a few seconds. */
+  checkpoint(e: CheckpointEvent, count: number): void {
+    const label = e.finish ? 'finish' : `checkpoint ${e.index + 1} / ${count - 1}`;
+    if (e.delta === null) this.delta.innerHTML = `<b>${formatTime(e.time, 2)}</b><i>${label}</i>`;
+    else {
+      const cls = e.delta <= 0 ? 'ahead' : 'behind';
+      this.delta.innerHTML = `<b class="${cls}">${formatDelta(e.delta)}</b><i>${label}</i>`;
     }
-    this.text(this.warn, 'warn', warn);
-    this.warn.classList.toggle('blink', warn === 'pull up');
+    this.delta.style.opacity = '1';
+    this.deltaFor = e.finish ? 1e9 : 3.5;
+  }
 
-    if (opts.menuOpen) this.html(this.center, 'center', '');
-    else if (opts.inRun) this.html(this.center, 'center', s.crashed ? `<div class="big">crashed</div>` : '');
-    else if (opts.paused) this.html(this.center, 'center', `<div class="big">paused</div><div class="sub">start / esc to fly</div>`);
-    else if (s.crashed) this.html(this.center, 'center', `<div class="big">crashed</div><div class="sub">new flight in ${Math.max(1, Math.ceil(opts.respawnIn))}</div>`);
-    else this.html(this.center, 'center', '');
+  /** Takes the split delta off the screen (the results card shows them all). */
+  clearDelta(): void {
+    this.delta.style.opacity = '0';
+    this.deltaFor = 0;
+  }
 
-    // the controls card: shown at the start until the pilot has been flying for a while (real time, crashes included)
-    if (!this.cardGone && (opts.menuOpen || opts.inRun)) {
-      this.cardGone = true;
-      this.card.style.opacity = '0';
+  /** Clears what a run left behind (deltas, messages). */
+  resetRun(): void {
+    this.delta.style.opacity = '0';
+    this.deltaFor = 0;
+    this.center.innerHTML = '';
+    this.last.center = '';
+  }
+
+  private set(key: string, e: HTMLElement, text: string, html = false): void {
+    if (this.last[key] === text) return;
+    this.last[key] = text;
+    if (html) e.innerHTML = text;
+    else e.textContent = text;
+  }
+
+  update(v: HudView, dt: number): void {
+    // the clock and the next checkpoint
+    const run = v.run;
+    if (run) {
+      this.set('clock', this.clockT, formatTime(run.phase === 'countdown' ? 0 : run.time, 2));
+      const cpCount = Math.max(0, run.count - 1);
+      const cp = run.phase === 'finished' ? 'finished' : run.passed < cpCount ? `checkpoint ${run.passed + 1} / ${cpCount}` : 'to the finish';
+      this.set('sub', this.clockSub, run.referenceTime !== null ? `${cp} &middot; best ${formatTime(run.referenceTime, 2)}` : cp, true);
+    } else {
+      this.set('clock', this.clockT, '');
+      this.set('sub', this.clockSub, '');
     }
-    if (!this.cardGone) {
-      if (c.active || this.cardTimer > 0 || s.time > 2) this.cardTimer += dt;
-      if (this.cardTimer > 9) {
-        this.cardGone = true;
-        this.card.style.opacity = '0';
-      }
+    if (this.deltaFor > 0) {
+      this.deltaFor -= dt;
+      if (this.deltaFor <= 0) this.delta.style.opacity = '0';
     }
 
-    const dev =
-      c.device === 'gamepad' ? (c.padName ?? 'gamepad') : c.device === 'keyboard' ? 'keyboard' : 'no controller: press a button on the pad';
-    this.text(this.dev, 'dev', dev);
-    this.flashLeft = Math.max(0, this.flashLeft - dt);
-    this.text(this.hint, 'hint', this.flashLeft > 0 ? this.flashText : opts.soundLocked ? 'click or press a key for sound' : '');
+    // the progress line
+    const key = v.checkpoints.map((c) => c.toFixed(4)).join(',');
+    if (key !== this.progKey) {
+      this.progKey = key;
+      for (const e of this.progCps) e.remove();
+      this.progCps = v.checkpoints.map((c) => {
+        const e = el('div', 'cp', this.prog);
+        e.style.left = `${(c * 100).toFixed(2)}%`;
+        return e;
+      });
+      this.prog.append(this.progGhost, this.progMe);
+    }
+    const passed = run?.passed ?? 0;
+    this.progCps.forEach((e, i) => e.classList.toggle('done', i < passed));
+    this.prog.style.display = v.checkpoints.length ? '' : 'none';
+    this.progMe.style.left = `${(Math.max(0, Math.min(1, v.progress)) * 100).toFixed(2)}%`;
+    this.progGhost.style.display = v.ghost === null ? 'none' : '';
+    if (v.ghost !== null) this.progGhost.style.left = `${(Math.max(0, Math.min(1, v.ghost)) * 100).toFixed(2)}%`;
+
+    // speed, gear, revs
+    this.set('speed', this.speed, String(Math.round(Math.abs(v.speedKmh))));
+    this.set('gear', this.gear, v.gear < 0 ? 'R' : v.gear === 0 ? 'N' : String(v.gear));
+    const rf = Math.max(0, Math.min(1, v.rpm / v.maxRpm));
+    this.revFill.style.width = `calc(${(rf * 100).toFixed(1)}% - 2px)`;
+    this.revs.classList.toggle('shift', v.rpm >= v.shiftRpm);
+
+    // the sticks: each one's half, and the two together
+    this.dotL.style.left = `${(50 + 50 * v.stickLeft).toFixed(1)}%`;
+    this.dotR.style.left = `${(50 + 50 * v.stickRight).toFixed(1)}%`;
+    this.dotW.style.left = `${(50 + 50 * v.steer).toFixed(1)}%`;
+
+    // the countdown, GO, wrong way
+    let center = '';
+    if (run?.phase === 'countdown') center = `<div class="big">${Math.ceil(run.countdown)}</div>`;
+    else if (run?.phase === 'running' && run.time < 0.9) center = `<div class="big go">GO</div>`;
+    else if (run?.phase === 'running' && run.wrongWay > 1.2) center = `<div class="warn">wrong way</div>`;
+    this.set('center', this.center, center, true);
+
+    if (this.msgFor > 0) {
+      this.msgFor -= dt;
+      if (this.msgFor <= 0) this.msg.style.opacity = '0';
+    }
+    if (this.cardFor > 0) {
+      this.cardFor -= dt;
+      if (this.cardFor <= 0) this.card.style.opacity = '0';
+    }
+
+    this.set('hint', this.hint, v.soundLocked ? 'click or press a key for sound' : v.stageLabel);
+    this.set('dev', this.dev, v.padName ?? 'no gamepad: keyboard');
   }
 }

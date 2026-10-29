@@ -2,36 +2,46 @@
  * The player's settings, kept in the browser (localStorage, per site: the Pages site and play.bat keep their own).
  *
  *   quality   'auto' (src/render/quality.ts adapts to the GPU) or a fixed level, an index into QUALITY
- *   roll      how fast full stick rolls: 'glide' 60 deg/s, 'cruise' 100, 'sport' 150 (the default since 10-26) or 'fighter'
- *             230 (the first tuning); named gentle / calm / sharp before 10-27, read back as cruise / sport / fighter
  *   volume    master sound volume, 0..1
- *   fpm       the flight-path marker on the HUD
+ *   car       the car last chosen (a CARS id)
+ *   aids      Xeno-Racer's three sets of driving aids: 'off' (its pro: nothing), 'standard' (ABS, low traction control, stability
+ *             control, a little counter-steer help) and 'full' (its beginner: everything on, more help)
+ *   gearbox   'auto' or 'manual' (RB / LB)
+ *   camera    the view the next run starts in (Y cycles them while driving)
+ *   ghost     the best run's ghost on the road
  */
+import type { Assists } from './core/contracts';
+
+export type AidsLevel = 'off' | 'standard' | 'full';
+export type CameraView = 'chase' | 'far' | 'hood';
+
 export interface Settings {
   quality: 'auto' | number;
-  roll: 'glide' | 'cruise' | 'sport' | 'fighter';
   volume: number;
-  fpm: boolean;
+  car: string;
+  aids: AidsLevel;
+  gearbox: 'auto' | 'manual';
+  camera: CameraView;
+  ghost: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { quality: 'auto', roll: 'sport', volume: 0.8, fpm: true };
+export const DEFAULT_SETTINGS: Settings = { quality: 'auto', volume: 0.8, car: 'lmp-x', aids: 'standard', gearbox: 'auto', camera: 'chase', ghost: true };
 
-/** Full-stick roll rate (rad/s) for each roll setting: fcs/roll-rate-max in the aircraft's fly-by-wire. */
-export const ROLL_RATE: Record<Settings['roll'], number> = { glide: 1.05, cruise: 1.75, sport: 2.6, fighter: 4.0 };
-
-/** The roll settings in the order the menu steps through them, with their labels. */
-export const ROLL_LABEL: Record<Settings['roll'], string> = {
-  glide: 'glide (60°/s)', cruise: 'cruise (100°/s)', sport: 'sport (150°/s)', fighter: 'fighter (230°/s)',
+export const AIDS: Record<AidsLevel, Omit<Assists, 'autoShift'>> = {
+  off: { abs: false, tcs: 'off', esc: false, steeringAssist: 0, autoClutch: true },
+  standard: { abs: true, tcs: 'low', esc: true, steeringAssist: 0.35, autoClutch: true },
+  full: { abs: true, tcs: 'high', esc: true, steeringAssist: 0.65, autoClutch: true },
 };
-const ROLLS = Object.keys(ROLL_RATE) as Settings['roll'][];
-/** The roll settings' earlier names. */
-const OLD_ROLL: Record<string, Settings['roll']> = { gentle: 'cruise', calm: 'sport', sharp: 'fighter' };
+export const AIDS_LABEL: Record<AidsLevel, string> = { off: 'off', standard: 'standard', full: 'full help' };
+export const AIDS_ORDER: AidsLevel[] = ['off', 'standard', 'full'];
+export const CAMERA_ORDER: CameraView[] = ['chase', 'far', 'hood'];
 
-export function nextRoll(r: Settings['roll']): Settings['roll'] {
-  return ROLLS[(ROLLS.indexOf(r) + 1) % ROLLS.length];
+/** The aids the physics reads (Vehicle.assists) for these settings. */
+export function assistsFor(s: Settings): Assists {
+  return { ...AIDS[s.aids], autoShift: s.gearbox === 'auto' };
 }
 
-const KEY = 'neon-flight.settings';
+const KEY = 'neon-racer.settings';
 
 export function loadSettings(): Settings {
   try {
@@ -39,10 +49,12 @@ export function loadSettings(): Settings {
     if (!saved || typeof saved !== 'object') return { ...DEFAULT_SETTINGS };
     const s = { ...DEFAULT_SETTINGS, ...saved };
     if (s.quality !== 'auto' && !(typeof s.quality === 'number' && s.quality >= 0 && s.quality <= 3)) s.quality = 'auto';
-    s.roll = OLD_ROLL[s.roll] ?? s.roll;
-    if (!ROLLS.includes(s.roll)) s.roll = DEFAULT_SETTINGS.roll;
     s.volume = typeof s.volume === 'number' ? Math.max(0, Math.min(1, s.volume)) : DEFAULT_SETTINGS.volume;
-    s.fpm = s.fpm !== false;
+    if (typeof s.car !== 'string') s.car = DEFAULT_SETTINGS.car;
+    if (!AIDS_ORDER.includes(s.aids)) s.aids = DEFAULT_SETTINGS.aids;
+    if (s.gearbox !== 'manual') s.gearbox = 'auto';
+    if (!CAMERA_ORDER.includes(s.camera)) s.camera = DEFAULT_SETTINGS.camera;
+    s.ghost = s.ghost !== false;
     return s;
   } catch {
     return { ...DEFAULT_SETTINGS };

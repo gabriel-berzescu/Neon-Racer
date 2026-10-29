@@ -1,34 +1,59 @@
 /**
- * The four flight controls, from a gamepad (Logitech F310 in X mode = the `standard` mapping) or the keyboard.
+ * The driving controls, from a gamepad (Logitech F310 in X mode = the `standard` mapping) or the keyboard.
  *
- *   left stick  Y  -> left wing   (stickLeft:  -1 pushed forward .. +1 pulled back)
- *   right stick Y  -> right wing  (stickRight: the same)
- *   right trigger  -> more power, both engines (powerUp:   0..1, how hard it is pulled)
- *   left trigger   -> less power               (powerDown: 0..1)
- * The sticks' X axes do nothing. Start (or Esc / P) pauses.
+ *   left stick  X  -> steering, half lock      both sticks add up: one stick all the way = half lock, both the same way = full lock,
+ *   right stick X  -> steering, half lock      opposite ways = straight ahead (Gabriel's design)
+ *   right trigger  -> throttle (analog)
+ *   left trigger   -> brake (analog)
+ *   A              -> handbrake (held)
+ *   RB / LB        -> shift up / down (manual gearbox only)
+ *   Y              -> camera
+ *   Back           -> put the car back on the road
+ *   Start          -> pause
+ * The sticks' Y axes do nothing while driving. In menus: the D-pad or the left stick moves, A confirms, B goes back, X retries.
  *
- * Keyboard (fallback, mirrors the pad): W / S = left stick forward / back, Up / Down = right stick forward / back,
- * Right Shift = more power, Left Shift = less power.
+ * Keyboard (mirrors the pad): A / D = the left stick, Left / Right = the right stick (so one key is half lock, as one stick is),
+ * W or Up = throttle, S or Down = brake, Space = handbrake, Shift / Q = shift up / down, C = camera, R = reset, Esc or P = pause.
+ * Keyboard steering ramps in and recentres like a thumb would.
  *
- * Stick values get a radial-free dead zone and a mild expo curve (fine control near the centre, full deflection at the end).
- * The triggers move the power setting rather than being it, so it stays where it is left, like a throttle lever (stepPower;
- * the game keeps the setting). Power is the thrust fraction: a turbojet's thrust grows with the square of its spool speed,
- * and the JSBSim throttle sets the spool speed, so the throttle is the square root of the power (throttleFor).
+ * Each stick gets Xeno-Racer's processing: a radial dead zone over the whole stick (a diagonal still steers fully) and a power curve for
+ * fine control near the centre. The physics' SteeringFilter then turns the command into a road-wheel angle (rate-limited, and at
+ * speed scaled to what the front tyres can use).
  */
+import { RepeatEdge, hysteresis, pedal, prettyPadName, radialDeadzone, responseCurve } from './processing';
 
-export interface FlightControls {
+export interface DriveControls {
+  /** Each stick's steering after its dead zone and curve, -1 (left) .. 1 (right). */
   stickLeft: number;
   stickRight: number;
-  powerUp: number;
-  powerDown: number;
+  /** The steering command: half of each stick, -1 .. 1. */
+  steer: number;
+  throttle: number;
+  brake: number;
+  handbrake: number;
 }
 
-export interface ControlFrame extends FlightControls {
-  /** Pause pressed this frame (edge). */
+export interface Nav {
+  up: boolean;
+  down: boolean;
+  left: boolean;
+  right: boolean;
+  confirm: boolean;
+  back: boolean;
+  /** X (pad) or R (keyboard): retry, in the menus that offer it. */
+  retry: boolean;
+}
+
+export interface ControlFrame extends DriveControls {
+  /** One-shot edges, true for exactly one poll. */
+  shiftUp: boolean;
+  shiftDown: boolean;
+  camera: boolean;
+  reset: boolean;
   pause: boolean;
-  /** Menu navigation, edges this frame (the D-pad, A / B / X; the arrow keys, Enter, Escape / Backspace, R). Menus only. */
-  nav: { up: boolean; down: boolean; confirm: boolean; back: boolean; retry: boolean };
-  /** Any control moved this frame (to hide the help card, unlock audio, ...). */
+  /** Menu navigation edges (with auto-repeat while a direction is held). */
+  nav: Nav;
+  /** Any control moved this frame (to hide the help card, ...). */
   active: boolean;
   device: 'gamepad' | 'keyboard' | 'none';
   padName: string | null;
@@ -43,54 +68,36 @@ export interface PadLike {
   readonly buttons: ArrayLike<{ readonly pressed: boolean; readonly value: number }>;
 }
 
+/** Xeno-Racer's defaults (its src/core/settings.ts). */
 export const STICK_DEADZONE = 0.08;
-/** 0 = linear, 1 = cubic. */
-export const STICK_EXPO = 0.5;
-export const TRIGGER_DEADZONE = 0.02;
-/** How fast a fully pulled trigger moves the power (per second: idle to full in about 1.4 s); a lighter pull, with its square. */
-export const POWER_RATE = 0.7;
+export const STICK_LINEARITY = 1.6;
+export const PEDAL_DEADZONE = 0.04;
 
-/** F310 standard mapping indices. */
-const AXIS_LEFT_Y = 1;
-const AXIS_RIGHT_Y = 3;
-const BTN_LT = 6;
-const BTN_RT = 7;
-const BTN_START = 9;
-const BTN_A = 0;
-const BTN_B = 1;
-const BTN_X = 2;
-const BTN_UP = 12;
-const BTN_DOWN = 13;
-const NAV_BUTTONS = [BTN_UP, BTN_DOWN, BTN_A, BTN_B, BTN_X] as const;
-
-export function shapeStick(v: number): number {
-  const a = Math.abs(v);
-  if (!(a > STICK_DEADZONE)) return 0;
-  const t = Math.min(1, (a - STICK_DEADZONE) / (1 - STICK_DEADZONE));
-  return Math.sign(v) * ((1 - STICK_EXPO) * t + STICK_EXPO * t * t * t);
+/** The steering command from the two sticks: each adds half lock. */
+export function combineSticks(left: number, right: number): number {
+  return Math.max(-1, Math.min(1, 0.5 * (left + right)));
 }
 
-export function shapeTrigger(v: number): number {
-  if (!(v > TRIGGER_DEADZONE)) return 0;
-  return Math.min(1, (v - TRIGGER_DEADZONE) / (1 - TRIGGER_DEADZONE));
+const _dz = [0, 0];
+/** One stick's steering: X after a radial dead zone over (x, y), then the response curve. */
+export function shapeStick(x: number, y: number): number {
+  radialDeadzone(x, y, STICK_DEADZONE, _dz);
+  return responseCurve(_dz[0], STICK_LINEARITY);
 }
 
-/** The power setting after `dt` seconds of these trigger pulls (both pulled: the difference). */
-export function stepPower(power: number, up: number, down: number, dt: number): number {
-  return Math.max(0, Math.min(1, power + (up * up - down * down) * POWER_RATE * dt));
-}
+/** Standard-mapping indices (W3C Gamepad API). */
+const AX = { lx: 0, ly: 1, rx: 2, ry: 3 } as const;
+const BTN = { a: 0, b: 1, x: 2, y: 3, lb: 4, rb: 5, lt: 6, rt: 7, back: 8, start: 9, up: 12, down: 13, left: 14, right: 15 } as const;
 
-/** Power (thrust fraction) -> JSBSim throttle (spool fraction). */
-export function throttleFor(power: number): number {
-  return Math.sqrt(Math.max(0, Math.min(1, power)));
-}
-
-const KEYS = new Set(['KeyW', 'KeyS', 'ArrowUp', 'ArrowDown', 'ShiftLeft', 'ShiftRight', 'Escape', 'KeyP', 'Enter', 'NumpadEnter', 'Backspace', 'KeyR']);
-/** Keyboard ramps (per second). */
-const KEY_STICK_RATE = 3.0;
-const KEY_STICK_RETURN = 5.0;
-/** A held key presses its trigger in by this much per second, so a tap moves the power a little. */
-const KEY_POWER_RATE = 3.0;
+const KEYS = new Set([
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyQ',
+  'KeyC', 'KeyR', 'KeyP', 'Escape', 'Enter', 'NumpadEnter', 'Backspace',
+]);
+/** Keyboard steering: how fast a held key moves its virtual stick in, and how fast it returns (per second). */
+const KEY_STEER_RATE = 3.0;
+const KEY_STEER_RETURN = 5.0;
+/** Keyboard pedals: a held key presses its pedal in this fast (per second), and lets go at once. */
+const KEY_PEDAL_RATE = 6.0;
 
 function approach(v: number, target: number, up: number, down: number, dt: number): number {
   const rate = Math.abs(target) > Math.abs(v) || Math.sign(target) !== Math.sign(v) ? up : down;
@@ -99,17 +106,22 @@ function approach(v: number, target: number, up: number, down: number, dt: numbe
   return Math.abs(d) <= s ? target : v + Math.sign(d) * s;
 }
 
+type Edge = 'shiftUp' | 'shiftDown' | 'camera' | 'reset' | 'pause' | 'confirm' | 'back' | 'retry' | 'up' | 'down' | 'left' | 'right';
+
 export class Controls {
   readonly frame: ControlFrame = {
-    stickLeft: 0, stickRight: 0, powerUp: 0, powerDown: 0,
-    pause: false, nav: { up: false, down: false, confirm: false, back: false, retry: false }, active: false, device: 'none', padName: null,
+    stickLeft: 0, stickRight: 0, steer: 0, throttle: 0, brake: 0, handbrake: 0,
+    shiftUp: false, shiftDown: false, camera: false, reset: false, pause: false,
+    nav: { up: false, down: false, left: false, right: false, confirm: false, back: false, retry: false },
+    active: false, device: 'none', padName: null,
   };
   private readonly held = new Set<string>();
-  private pausePending = false;
-  private startWasDown = false;
-  private navWasDown: boolean[] = [false, false, false, false, false];
-  private navPending = { up: false, down: false, confirm: false, back: false, retry: false };
-  private kb = { l: 0, r: 0, up: 0, down: 0 };
+  /** Key presses since the last poll (edges). */
+  private readonly keyEdges = new Set<Edge>();
+  private readonly padWasDown = new Map<number, boolean>();
+  private readonly repeat = { up: new RepeatEdge(), down: new RepeatEdge(), left: new RepeatEdge(), right: new RepeatEdge() };
+  private stickNav = { x: 0, y: 0 };
+  private kb = { l: 0, r: 0, throttle: 0, brake: 0 };
   private lastPadActivity = -Infinity;
   private lastKeyActivity = -Infinity;
   private time = 0;
@@ -128,14 +140,18 @@ export class Controls {
   private onKey(e: KeyboardEvent, down: boolean): void {
     if (!KEYS.has(e.code)) return;
     e.preventDefault();
-    if (down && !e.repeat && (e.code === 'Escape' || e.code === 'KeyP')) this.pausePending = true;
     if (down && !e.repeat) {
-      const n = this.navPending;
-      if (e.code === 'ArrowUp') n.up = true;
-      else if (e.code === 'ArrowDown') n.down = true;
-      else if (e.code === 'Enter' || e.code === 'NumpadEnter') n.confirm = true;
-      else if (e.code === 'Escape' || e.code === 'Backspace') n.back = true;
-      else if (e.code === 'KeyR') n.retry = true;
+      const k = this.keyEdges;
+      switch (e.code) {
+        case 'ShiftLeft': case 'ShiftRight': k.add('shiftUp'); break;
+        case 'KeyQ': k.add('shiftDown'); break;
+        case 'KeyC': k.add('camera'); break;
+        case 'KeyR': k.add('reset'); k.add('retry'); break;
+        case 'KeyP': k.add('pause'); break;
+        case 'Escape': k.add('pause'); k.add('back'); break;
+        case 'Enter': case 'NumpadEnter': k.add('confirm'); break;
+        case 'Backspace': k.add('back'); break;
+      }
     }
     if (down) this.held.add(e.code);
     else this.held.delete(e.code);
@@ -163,58 +179,76 @@ export class Controls {
   poll(dt: number): ControlFrame {
     this.time += dt;
     const f = this.frame;
-    const prev = { l: f.stickLeft, r: f.stickRight, up: f.powerUp, down: f.powerDown };
+    const prev = { l: f.stickLeft, r: f.stickRight, t: f.throttle, b: f.brake, h: f.handbrake };
 
     // keyboard state (always tracked, so switching devices is seamless)
     const h = this.held;
-    const kl = (h.has('KeyS') ? 1 : 0) - (h.has('KeyW') ? 1 : 0);
-    const kr = (h.has('ArrowDown') ? 1 : 0) - (h.has('ArrowUp') ? 1 : 0);
-    const kup = h.has('ShiftRight');
-    const kdown = h.has('ShiftLeft');
     const kb = this.kb;
-    kb.l = approach(kb.l, kl, KEY_STICK_RATE, KEY_STICK_RETURN, dt);
-    kb.r = approach(kb.r, kr, KEY_STICK_RATE, KEY_STICK_RETURN, dt);
-    kb.up = kup ? Math.min(1, kb.up + KEY_POWER_RATE * dt) : 0;
-    kb.down = kdown ? Math.min(1, kb.down + KEY_POWER_RATE * dt) : 0;
+    const kl = (h.has('KeyD') ? 1 : 0) - (h.has('KeyA') ? 1 : 0);
+    const kr = (h.has('ArrowRight') ? 1 : 0) - (h.has('ArrowLeft') ? 1 : 0);
+    kb.l = approach(kb.l, kl, KEY_STEER_RATE, KEY_STEER_RETURN, dt);
+    kb.r = approach(kb.r, kr, KEY_STEER_RATE, KEY_STEER_RETURN, dt);
+    kb.throttle = h.has('KeyW') || h.has('ArrowUp') ? Math.min(1, kb.throttle + KEY_PEDAL_RATE * dt) : 0;
+    kb.brake = h.has('KeyS') || h.has('ArrowDown') ? Math.min(1, kb.brake + KEY_PEDAL_RATE * dt) : 0;
+    const khand = h.has('Space') ? 1 : 0;
 
     const pad = this.pad();
-    let pl = 0, pr = 0, pup = 0, pdown = 0;
-    let start = false;
+    const btn = (i: number) => !!pad?.buttons[i]?.pressed;
+    const edge = (i: number) => {
+      const down = btn(i);
+      const was = this.padWasDown.get(i) ?? false;
+      this.padWasDown.set(i, down);
+      return down && !was;
+    };
+    let pl = 0, pr = 0, pt = 0, pb = 0, ph = 0;
+    let lx = 0, ly = 0;
     if (pad) {
-      pl = shapeStick(pad.axes[AXIS_LEFT_Y] ?? 0);
-      pr = shapeStick(pad.axes[AXIS_RIGHT_Y] ?? 0);
-      pup = shapeTrigger(pad.buttons[BTN_RT]?.value ?? 0);
-      pdown = shapeTrigger(pad.buttons[BTN_LT]?.value ?? 0);
-      start = !!pad.buttons[BTN_START]?.pressed;
-      if (pl !== 0 || pr !== 0 || pup > 0.05 || pdown > 0.05 || start) this.lastPadActivity = this.time;
+      lx = pad.axes[AX.lx] ?? 0;
+      ly = pad.axes[AX.ly] ?? 0;
+      pl = shapeStick(lx, ly);
+      pr = shapeStick(pad.axes[AX.rx] ?? 0, pad.axes[AX.ry] ?? 0);
+      pt = pedal(pad.buttons[BTN.rt]?.value ?? 0, PEDAL_DEADZONE);
+      pb = pedal(pad.buttons[BTN.lt]?.value ?? 0, PEDAL_DEADZONE);
+      ph = btn(BTN.a) ? 1 : 0;
+      let any = pl !== 0 || pr !== 0 || pt > 0.05 || pb > 0.05 || Math.abs(ly) > 0.5;
+      for (let i = 0; i < 16 && !any; i++) any = btn(i);
+      if (any) this.lastPadActivity = this.time;
     }
     const usePad = pad !== null && this.lastPadActivity >= this.lastKeyActivity;
     if (usePad) {
-      f.stickLeft = pl; f.stickRight = pr; f.powerUp = pup; f.powerDown = pdown;
+      f.stickLeft = pl; f.stickRight = pr; f.throttle = pt; f.brake = pb; f.handbrake = ph;
       f.device = 'gamepad';
     } else {
-      f.stickLeft = kb.l; f.stickRight = kb.r; f.powerUp = kb.up; f.powerDown = kb.down;
+      f.stickLeft = kb.l; f.stickRight = kb.r; f.throttle = kb.throttle; f.brake = kb.brake; f.handbrake = khand;
       f.device = pad || this.lastKeyActivity > -Infinity ? 'keyboard' : 'none';
     }
-    f.padName = pad ? pad.id.replace(/\s*\(.*$/, '').trim() || 'Gamepad' : null;
+    f.steer = combineSticks(f.stickLeft, f.stickRight);
+    f.padName = pad ? prettyPadName(pad.id) : null;
 
-    f.pause = this.pausePending || (start && !this.startWasDown);
-    const navDown = NAV_BUTTONS.map((b) => !!pad?.buttons[b]?.pressed);
-    const edge = (i: number) => navDown[i] && !this.navWasDown[i];
-    const n = this.navPending;
-    f.nav.up = n.up || edge(0);
-    f.nav.down = n.down || edge(1);
-    f.nav.confirm = n.confirm || edge(2);
-    f.nav.back = n.back || edge(3);
-    f.nav.retry = n.retry || edge(4);
-    this.navWasDown = navDown;
-    this.navPending = { up: false, down: false, confirm: false, back: false, retry: false };
-    this.pausePending = false;
-    this.startWasDown = start;
+    // one-shot edges: the pad's buttons and the keys pressed since the last poll
+    const k = this.keyEdges;
+    f.shiftUp = edge(BTN.rb) || k.has('shiftUp');
+    f.shiftDown = edge(BTN.lb) || k.has('shiftDown');
+    f.camera = edge(BTN.y) || k.has('camera');
+    f.reset = edge(BTN.back) || k.has('reset');
+    f.pause = edge(BTN.start) || k.has('pause');
+    const n = f.nav;
+    n.confirm = edge(BTN.a) || k.has('confirm');
+    n.back = edge(BTN.b) || k.has('back');
+    n.retry = edge(BTN.x) || k.has('retry');
+    // menu directions: the D-pad, the left stick (with hysteresis) and the arrow keys, repeating while held
+    this.stickNav.x = hysteresis(lx, this.stickNav.x);
+    this.stickNav.y = hysteresis(ly, this.stickNav.y);
+    n.up = this.repeat.up.update(btn(BTN.up) || this.stickNav.y < 0 || h.has('ArrowUp'), dt);
+    n.down = this.repeat.down.update(btn(BTN.down) || this.stickNav.y > 0 || h.has('ArrowDown'), dt);
+    n.left = this.repeat.left.update(btn(BTN.left) || this.stickNav.x < 0 || h.has('ArrowLeft'), dt);
+    n.right = this.repeat.right.update(btn(BTN.right) || this.stickNav.x > 0 || h.has('ArrowRight'), dt);
+    k.clear();
+
     f.active =
-      f.pause ||
+      f.pause || f.camera || f.reset || n.confirm || n.back ||
       Math.abs(f.stickLeft - prev.l) > 1e-3 || Math.abs(f.stickRight - prev.r) > 1e-3 ||
-      Math.abs(f.powerUp - prev.up) > 1e-3 || Math.abs(f.powerDown - prev.down) > 1e-3;
+      Math.abs(f.throttle - prev.t) > 1e-3 || Math.abs(f.brake - prev.b) > 1e-3 || f.handbrake !== prev.h;
     return f;
   }
 }
