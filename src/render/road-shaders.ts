@@ -198,8 +198,9 @@ void main() {
   // chevrons on the outside of the tight corners: amber arrows pointing the way the road goes
   if (ac > 0.01) {
     float c = 0.5 * top;
-    float ph = fract((s * sign(chev) * -1.0 + 1.25 * abs(v - c)) / 2.4);
-    // (the arrows point along the direction of travel: the stripes lean back from the middle of the board)
+    float ph = fract((s + 1.25 * abs(v - c)) / 2.4);
+    // (the arrows point along the direction of travel, +s, on both sides of the road: the stripes lean back from the middle of the
+    // board. Seen from the car, an arrow on the outside of a corner then points the way the road turns, left or right.)
     float a = clamp((0.42 - abs(ph - 0.5)) / max(ps / 2.4, 1e-4) * 0.5, 0.0, 1.0);
     float board = step(0.12, v) * step(v, top - 0.18);
     glow += uAmber * (0.62 * a * board * ac);
