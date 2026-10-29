@@ -1,7 +1,8 @@
 /**
  * Best times and ghosts, per stage (the seed), in localStorage.
  *
- *   neon-racer.records         JSON: { [seed]: StageRecord }: the best time and its splits and car, each car's best, runs, last played
+ *   neon-racer.records         JSON: { [seed]: StageRecord }: the stage's name, the best time and its splits and car, each car's best,
+ *                              runs, last played
  *   neon-racer.ghost.<seed>    the best run's ghost (src/game/ghost.ts encodeGhost)
  *
  * Ghosts are about 100 kB each, so only the GHOSTS_KEPT most recently played stages keep theirs (the times stay); when storage is full
@@ -15,6 +16,8 @@ export const GHOSTS_KEPT = 24;
 
 export interface StageRecord {
   seed: number;
+  /** The stage's name ("Lunar Switchbacks"). Records kept before names were (10-29) lack it until it is filled in (setName). */
+  name?: string;
   /** The best time (s) on this stage, any car, and the car and the splits of that run. */
   best: number;
   car: string;
@@ -29,6 +32,7 @@ export interface StageRecord {
 
 export interface FinishedRun {
   seed: number;
+  name?: string;
   car: string;
   time: number;
   splits: number[];
@@ -93,12 +97,22 @@ export class Records {
     }
   }
 
-  /** A stage was started: it counts as played now (keeps its ghost among the recent ones). */
-  touch(seed: number): void {
+  /** A stage was started: it counts as played now (keeps its ghost among the recent ones), and its name is kept. */
+  touch(seed: number, name?: string): void {
     const all = this.all();
     const r = all[String(seed)];
     if (!r) return;
     r.played = Date.now();
+    if (name) r.name = name;
+    this.write(all);
+  }
+
+  /** Fills in a stage's name (for records kept before names were). */
+  setName(seed: number, name: string): void {
+    const all = this.all();
+    const r = all[String(seed)];
+    if (!r) return;
+    r.name = name;
     this.write(all);
   }
 
@@ -119,6 +133,7 @@ export class Records {
       record.splits = run.splits.slice();
     }
     if (carBest) record.byCar[run.car] = run.time;
+    if (run.name) record.name = run.name;
     all[key] = record;
     this.write(all);
     if (best) this.writeGhost(run.seed, run.ghost, all);

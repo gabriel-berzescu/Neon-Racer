@@ -149,6 +149,20 @@ describe('records', () => {
     expect(Object.keys(r.all())).toHaveLength(5);
   });
 
+  it("keeps each stage's name, and fills it in for records kept without one", () => {
+    const r = new Records(new MapStore());
+    r.save({ seed: 7, name: 'Neon Col', car: 'dieci', time: 90, splits: [90], ghost: ghost() });
+    expect(r.get(7)?.name).toBe('Neon Col');
+    r.save({ seed: 8, car: 'dieci', time: 90, splits: [90], ghost: ghost() }); // (as before names were kept)
+    expect(r.get(8)?.name).toBeUndefined();
+    r.setName(8, 'Lunar Switchbacks');
+    expect(r.get(8)?.name).toBe('Lunar Switchbacks');
+    r.save({ seed: 9, car: 'volta', time: 95, splits: [95], ghost: ghost() });
+    r.touch(9, 'Ember Crest');
+    expect(r.get(9)?.name).toBe('Ember Crest');
+    expect(r.get(7)?.best).toBe(90);
+  });
+
   it('works without storage', () => {
     const r = new Records(null);
     expect(r.save({ seed: 1, car: 'volta', time: 1, splits: [1], ghost: ghost() }).best).toBe(true);

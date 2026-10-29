@@ -153,6 +153,10 @@ export class Game {
   /** Work to do on the next frame, after a "building stage" message has been drawn. */
   private pending: (() => void) | null = null;
   private time = 0;
+  /** Stages in the open "Stages driven" list still to be named (nameOneStage). */
+  private unnamed: number[] = [];
+  /** Frames left that the quality governor does not measure (after a long frame of our own making). */
+  private hitch = 0;
   private last = 0;
   private frames = 0;
   private readonly qualityFromUrl: boolean;
@@ -253,19 +257,31 @@ export class Game {
     return `${c.stats.powerHp} hp &middot; ${c.stats.massKg} kg &middot; ${c.stats.topSpeedKmh} km/h`;
   }
 
-  private openRecent(): void {
+  private openRecent(selected = 0): void {
     this.menuBack = 'title';
     const list = this.records.recent(8);
+    // (records kept before stages had their names stored get them filled in, one a frame: a name takes building the stage)
+    this.unnamed = list.filter((r) => !r.name).map((r) => r.seed);
     this.menu.open({
       title: 'Stages driven',
       style: 'title',
+      wide: true,
       body: 'your best time on each, and the car',
       back: 'back',
+      selected,
       choices: [
-        ...list.map((r) => ({ id: `stage:${r.seed}`, label: `${String(r.seed).padStart(6, '0')}`, key: `${formatTime(r.best, 2)} · ${carById(r.car).name}` })),
+        ...list.map((r) => ({ id: `stage:${r.seed}`, label: `${String(r.seed).padStart(6, '0')} · ${r.name ?? '…'}`, key: `${formatTime(r.best, 2)} · ${carById(r.car).name}` })),
         { id: 'back', label: 'Back', key: 'B' },
       ],
     });
+  }
+
+  /** Names one stage of the "Stages driven" list that has none yet, and shows it. */
+  private nameOneStage(): void {
+    const seed = this.unnamed.shift();
+    if (seed === undefined) return;
+    this.records.setName(seed, this.world.generate(seed).name);
+    this.openRecent(this.menu.selected);
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -308,7 +324,7 @@ export class Game {
     this.hud.setVisible(true);
     this.hud.resetRun();
     this.hud.showControlsCard();
-    this.records.touch(stage.seed);
+    this.records.touch(stage.seed, stage.name);
     // the car, on the start line, held until GO
     this.physics = new PhysicsWorld(stage.track);
     this.car = this.physics.addVehicle(this.carDef);
@@ -394,7 +410,7 @@ export class Game {
     const run = this.run!;
     const stage = this.stage!;
     if (!this.recorder) return;
-    this.lastSave = this.records.save({ seed: stage.seed, car: this.carDef.id, time: run.time, splits: run.splits.slice(), ghost: this.recorder.finish() });
+    this.lastSave = this.records.save({ seed: stage.seed, name: stage.name, car: this.carDef.id, time: run.time, splits: run.splits.slice(), ghost: this.recorder.finish() });
     this.sound.ui(this.lastSave.best && this.lastSave.previous !== null ? 'best' : 'finish');
     this.recorder = null;
     this.resultsIn = RESULTS_DELAY;
@@ -599,7 +615,13 @@ export class Game {
     } else if (c.pause && this.mode === 'drive') this.openPause();
 
     if (this.mode === 'title' || !this.car || !this.run || !this.physics || !this.stage) {
-      this.quality.frame(dt, true);
+      // (the frame after naming a stage is a long one: the quality governor must not take it for a slow GPU)
+      this.quality.frame(dt, this.hitch === 0);
+      this.hitch = Math.max(0, this.hitch - 1);
+      if (this.unnamed.length > 0 && this.menu.title === 'Stages driven') {
+        this.nameOneStage();
+        this.hitch = 2;
+      }
       if (this.carView) {
         this.carView.update(this.parkedPose, dt);
         this.orbit.update(this.parkedPose.position, dt);

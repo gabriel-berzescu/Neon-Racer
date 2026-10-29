@@ -28,6 +28,8 @@ export interface MenuSpec {
   retry?: string;
   /** 'title': the big logo layout of the title screen (default: a card). */
   style?: 'card' | 'title';
+  /** Longer rows with values worth reading (a list of stages and their times): a wider list, brighter values. */
+  wide?: boolean;
   /** The choice selected when the menu opens (an index). */
   selected?: number;
 }
@@ -69,6 +71,8 @@ const CSS = `
 .nr-menu.title ul { max-width: 460px; }
 .nr-menu.title li { background: rgba(7,2,15,.45); }
 .nr-menu.title li.sel { background: rgba(255,43,214,.16); }
+.nr-menu.wide .box { max-width: 760px; } .nr-menu.wide ul { max-width: 680px; }
+.nr-menu.wide li { white-space: nowrap; } .nr-menu.wide li .k { opacity: .9; font-size: 14px; color: #ffd27a; text-shadow: 0 0 6px #ff9a40; }
 .nr-menu .body .info { text-transform: none; letter-spacing: .03em; font-size: 15px; text-align: left; opacity: 1; max-width: 560px;
   padding: 14px 20px; border-radius: 10px; background: rgba(7,2,15,.72); backdrop-filter: blur(4px); box-shadow: 0 0 24px rgba(7,2,15,.6); }
 .nr-menu .body .info table { border-collapse: collapse; margin: 0 0 12px; width: auto; }
@@ -116,6 +120,7 @@ export class Menu {
     this.spec = spec;
     this.sel = Math.max(0, Math.min(spec.choices.length - 1, spec.selected ?? 0));
     this.root.classList.toggle('title', spec.style === 'title');
+    this.root.classList.toggle('wide', spec.wide === true);
     this.picked = null;
     this.render();
     this.root.classList.add('open');
