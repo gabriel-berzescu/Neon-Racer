@@ -1,11 +1,12 @@
 import { Game } from './game';
-import { devCarView, devWorld, silentSound } from './dev-world';
+import { devCarView, devWorld } from './dev-world';
+import { Sound } from './audio';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const ui = document.getElementById('ui') as HTMLElement;
 
-// (the stand-in world, car and sound until the real ones are in)
-const game = new Game(canvas, ui, devWorld(), devCarView, silentSound());
+// (the stand-in world and car until the real ones are in)
+const game = new Game(canvas, ui, devWorld(), devCarView, new Sound());
 game.boot().catch((err: unknown) => {
   console.error(err);
   const pre = document.createElement('pre');

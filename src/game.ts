@@ -79,6 +79,8 @@ export interface SoundLike {
   setCar(def: CarDefinition | null): void;
   update(state: VehicleState | null, dt: number, opts: { paused: boolean }): void;
   setVolume(v: number): void;
+  /** Where the listener is: the camera, every frame before update. */
+  setListener?(camera: THREE.Camera): void;
   ui(name: 'move' | 'select' | 'back' | 'countdown' | 'go' | 'checkpoint' | 'best' | 'finish'): void;
 }
 
@@ -580,6 +582,7 @@ export class Game {
     this.time += dt;
 
     // menus first: an open menu takes the navigation (and Start closes the pause menu)
+    if ((this.seedEntry.isOpen || this.menu.isOpen) && (c.nav.up || c.nav.down || c.nav.left || c.nav.right)) this.sound.ui('move');
     if (this.seedEntry.isOpen) {
       const r = this.seedEntry.handle(c.nav);
       if (r === 'back') {
@@ -722,6 +725,7 @@ export class Game {
       soundLocked: this.sound.locked,
     };
     this.hud.update(hv, dt);
+    this.sound.setListener?.(this.renderer.camera);
     this.sound.update(st, dt, { paused: this.paused });
   }
 
